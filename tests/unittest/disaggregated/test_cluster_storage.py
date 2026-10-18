@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import asyncio
 import contextlib
 import subprocess
@@ -268,6 +283,28 @@ class TestHttpClusterStorage(TestClusterStorage):
 
 class TestEtcdClusterStorage(TestClusterStorage):
     __test__ = True
+
+    @pytest.mark.parametrize("refresh_before_set", [False, True])
+    @pytest.mark.parametrize("overwrite", [False, True])
+    @timeout(15)
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_reregister_after_lease_expiry(self, storage_client,
+                                                 refresh_before_set, overwrite):
+        key = gen_key("expired_registration")
+        assert await storage_client.set(key, "old", ttl=2)
+        deadline = time.monotonic() + 10
+        while await storage_client.get(key) is not None:
+            assert time.monotonic() < deadline, "etcd did not expire the key"
+            await asyncio.sleep(0.1)
+
+        if refresh_before_set:
+            assert not await storage_client.expire(key, 2)
+        assert await storage_client.set(key,
+                                        "recovered",
+                                        overwrite_if_exists=overwrite,
+                                        ttl=2)
+        assert await storage_client.get(key) == "recovered"
+        assert await storage_client.expire(key, 2)
 
     @pytest.fixture(scope="class")
     def storage_server(self):

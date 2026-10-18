@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import abc
 import asyncio
 import importlib.metadata as importlib_metadata
@@ -12,6 +27,7 @@ from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
+import grpc
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -622,6 +638,12 @@ class Etcd3ClusterStorage(ClusterStorage):
             self._leases[key] = self.client.lease(ttl)
         return self._leases[key]
 
+    def _discard_lease(self, key: str):
+        if self._one_single_lease:
+            self._instance_lease = None
+        else:
+            self._leases.pop(key, None)
+
     @property
     def client(self):
         return self._client
@@ -643,12 +665,22 @@ class Etcd3ClusterStorage(ClusterStorage):
                   value: str,
                   overwrite_if_exists: bool = False,
                   ttl: int = -1) -> bool:
-        lease = self._get_lease(key, ttl)
-        if not overwrite_if_exists:
-            return self.client.put_if_not_exists(key, value, lease=lease)
-        else:
-            self.client.put(key, value, lease=lease)
-            return True
+        for attempt in range(2):
+            lease = self._get_lease(key, ttl)
+            try:
+                if not overwrite_if_exists:
+                    return self.client.put_if_not_exists(key,
+                                                         value,
+                                                         lease=lease)
+                self.client.put(key, value, lease=lease)
+                return True
+            except grpc.RpcError as e:
+                if lease is None or e.code() != grpc.StatusCode.NOT_FOUND:
+                    raise
+                self._discard_lease(key)
+                if attempt == 1:
+                    logger.error(f"Etcd lease expired while setting {key}: {e}")
+                    return False
 
     @handle_etcd_error(return_on_error=None)
     async def get(self, key: str) -> str:
@@ -664,10 +696,20 @@ class Etcd3ClusterStorage(ClusterStorage):
         if ttl <= 0:
             logger.error(f"TTL must be greater than 0, got {ttl}")
             return False
-        lease = self._get_lease(key, ttl)
-        assert lease is not None, "Lease must be created"
+        lease = (self._instance_lease
+                 if self._one_single_lease else self._leases.get(key))
+        if lease is None:
+            return False
         # TTL will be ignored since it can only be set when creating a lease
-        next(self.client.refresh_lease(lease_id=lease.id), None)
+        try:
+            response = next(self.client.refresh_lease(lease_id=lease.id), None)
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.NOT_FOUND:
+                raise
+            response = None
+        if response is None or response.TTL <= 0:
+            self._discard_lease(key)
+            return False
         return True
 
     @handle_etcd_error(return_on_error={})
