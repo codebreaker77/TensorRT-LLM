@@ -198,8 +198,9 @@ def _select_mla_generation_fmha(
         # Helix H=96 verify groups are unchanged.
         (103, 96, 4, True, True, "cute_dsl_mla"),
         (107, 96, 4, True, True, "cute_dsl_mla"),
-        # Single-token H=96 is unchanged (measured perf-table entry).
-        (103, 96, 1, True, False, "cute_dsl_mla"),
+        # Single-token H=96 follows the measured perf table: the batch of 4 is
+        # below its FP8 minimum of 8.
+        (103, 96, 1, True, False, "trtllm_gen"),
         # Head counts TRTLLM-Gen serves keep the perf gate.
         (103, 128, 8, True, False, "trtllm_gen"),
         (103, 64, 8, True, False, "trtllm_gen"),
