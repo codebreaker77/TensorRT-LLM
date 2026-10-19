@@ -123,7 +123,14 @@ class _TrtllmGenStub:
 
 
 def _select_mla_generation_fmha(
-    monkeypatch, *, sm: int, num_heads: int, seq_len_q: int, fp8_kv: bool, helix: bool
+    monkeypatch,
+    *,
+    sm: int,
+    num_heads: int,
+    seq_len_q: int,
+    fp8_kv: bool,
+    helix: bool,
+    batch_size: int = 4,
 ):
     """Run FmhaManager._select_mla over [CuteDslMlaFmha, TRTLLM-Gen stub] on CPU."""
     from tensorrt_llm._torch.attention.backends.fmha import cute_dsl_mla
@@ -145,7 +152,6 @@ def _select_mla_generation_fmha(
         CuteDslMlaFmha, "_kernel_can_implement", staticmethod(lambda *args, **kwargs: (True, ""))
     )
 
-    batch_size = 4
     num_tokens = batch_size * seq_len_q
     attn = SimpleNamespace(
         num_heads=num_heads,
@@ -185,6 +191,7 @@ def _select_mla_generation_fmha(
     return "cute_dsl_mla" if selected is cute else "trtllm_gen"
 
 
+@pytest.mark.cpu_only
 @pytest.mark.parametrize(
     "sm, num_heads, seq_len_q, fp8_kv, helix, expected",
     [
@@ -219,6 +226,37 @@ def test_mla_generation_routes_wide_head_fp8_verify_away_from_trtllm_gen(
             seq_len_q=seq_len_q,
             fp8_kv=fp8_kv,
             helix=helix,
+        )
+        == expected
+    )
+
+
+@pytest.mark.cpu_only
+@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize(
+    "fp8_kv, batch_size, expected",
+    [
+        (True, 4, "trtllm_gen"),
+        (True, 7, "trtllm_gen"),
+        (True, 8, "cute_dsl_mla"),
+        (True, 9, "cute_dsl_mla"),
+        (False, 1, "cute_dsl_mla"),
+        (False, 4, "cute_dsl_mla"),
+    ],
+)
+def test_mla_generation_single_token_batch_threshold(
+    monkeypatch, sm, fp8_kv, batch_size, expected
+) -> None:
+    """The measured FP8 batch floor applies at its boundary, without gating BF16."""
+    assert (
+        _select_mla_generation_fmha(
+            monkeypatch,
+            sm=sm,
+            num_heads=96,
+            seq_len_q=1,
+            fp8_kv=fp8_kv,
+            helix=False,
+            batch_size=batch_size,
         )
         == expected
     )
