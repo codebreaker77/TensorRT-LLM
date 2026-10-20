@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import abc
 import asyncio
 import importlib.metadata as importlib_metadata
@@ -532,6 +547,7 @@ class Etcd3WatchEventQueue(WatchEventQueue):
         self.key_prefix = key_prefix
         self.events = asyncio.Queue()
         self._cancel_event = cancel_event
+        self._loop = asyncio.get_running_loop()
 
     def cancel_event(self):
         if self._cancel_event:
@@ -548,15 +564,15 @@ class Etcd3WatchEventQueue(WatchEventQueue):
             for event in watch_resp.events:
                 # Event type is not in public interface of etcd3
                 event_type = WatchEventType.SET if "Put" in event.__class__.__name__ else WatchEventType.DELETE
-                self.events.put_nowait(
+                # The SDK invokes this callback on its watch thread.
+                self._loop.call_soon_threadsafe(
+                    self.events.put_nowait,
                     WatchEvent(
                         storage_item=StorageItem(
                             key=event.key.decode("utf-8"),
                             value=event.value.decode("utf-8")),
                         event_type=event_type,
                     ))
-            if self.events._loop:
-                self.events._loop.call_soon_threadsafe(lambda: None)
         except Exception as e:
             logger.error(f"Error adding event: {e}")
             self.cancel_event()
