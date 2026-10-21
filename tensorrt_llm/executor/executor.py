@@ -20,6 +20,7 @@ from typing import (TYPE_CHECKING, AsyncIterable, Dict, Generator, List,
 import numpy as np
 import torch
 
+from tensorrt_llm.bindings.BuildInfo import ENABLE_MULTI_DEVICE
 from tensorrt_llm.inputs.multimodal import MultimodalParams
 from tensorrt_llm.logger import logger, set_level
 
@@ -543,8 +544,10 @@ class GenerationExecutor(ABC):
         logger.warning(f"Orchestrator is creating IPC executor")
         if use_worker:
             from .worker import GenerationExecutorWorker
-            return GenerationExecutorWorker(**worker_kwargs,
-                                            is_llm_executor=is_llm_executor)
+            return GenerationExecutorWorker(
+                **worker_kwargs,
+                postproc_worker_config=postproc_worker_config,
+                is_llm_executor=is_llm_executor)
         else:
             from .proxy import GenerationExecutorProxy
             return GenerationExecutorProxy(
@@ -666,7 +669,15 @@ class GenerationExecutor(ABC):
         # for TP1 to avoid the large overhead of IPC.
         # WAR: Developers can enable this manually, this will be easier for TP1
         # debugging. We will introduce a better solution in the future.
-        if return_logits or enable_worker_single_process_for_tp1():
+        use_worker_without_mpi = (not ENABLE_MULTI_DEVICE
+                                  and mpi_session is None
+                                  and not orchestrator_is_rpc)
+        if use_worker_without_mpi and model_world_size != 1:
+            raise ValueError(
+                "ENABLE_MULTI_DEVICE=OFF requires model_world_size=1 "
+                "for the default executor.")
+        if (return_logits or enable_worker_single_process_for_tp1()
+                or use_worker_without_mpi):
             logger.warning(
                 "Using single process worker for TP1, this may hurt streaming generation performance."
             )
